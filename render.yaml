@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: bgkill-api
+    runtime: docker
+    rootContext: backend
+    dockerfilePath: Dockerfile
+    # Increase memory for rembg (models are large)
+    # The starter (free) plan has 512MB RAM
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: FRONTEND_URL
+        fromContext: environment
+        default: "*"
