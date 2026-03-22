@@ -64,11 +64,18 @@ export const useImageStore = create<ImageStore>((set, get) => ({
 
     const progressInterval = setInterval(() => {
       set(state => ({
-        items: state.items.map(i => 
-          i.id === id ? { ...i, progress: Math.min(i.progress + 5, 90) } : i
-        )
+        items: state.items.map(i => {
+          if (i.id !== id) return i
+          // Dynamic increment: slower as it gets higher
+          let inc = 2
+          if (i.progress < 50) inc = 4
+          else if (i.progress < 80) inc = 2
+          else if (i.progress < 95) inc = 0.5
+          
+          return { ...i, progress: Math.min(i.progress + inc, 95) }
+        })
       }))
-    }, 300)
+    }, 400)
 
     try {
       const formData = new FormData()

@@ -63,7 +63,11 @@ async def remove_background(
         raise HTTPException(413, "File too large. Max 50MB.")
     
     try:
-        # Open with Pillow to validate and get metadata
+        # Use anyio.to_thread to run the blocking rembg call in a separate thread
+        # This prevents blocking the FastAPI event loop, especially with single workers
+        from anyio import to_thread
+        
+        # Open with Pillow for metadata only
         input_image = Image.open(io.BytesIO(contents))
         original_width, original_height = input_image.size
         original_mode = input_image.mode
@@ -74,40 +78,28 @@ async def remove_background(
             f"Mode: {original_mode} | Size: {len(contents)/1024:.1f}KB"
         )
         
-        # Convert to RGBA if needed for processing
-        if original_mode not in ("RGB", "RGBA"):
-            input_image = input_image.convert("RGBA")
-        
-        # Convert back to bytes for rembg
-        img_byte_arr = io.BytesIO()
-        input_image.save(img_byte_arr, format="PNG")
-        img_byte_arr = img_byte_arr.getvalue()
-        
         # Select model based on mode
-        # portrait mode is better for humans, general for objects/products
         session = session_portrait if mode == "portrait" else session_general
         
-        # Run background removal
-        # rembg preserves full resolution — no quality loss
-        output_bytes = remove(
-            img_byte_arr,
-            session=session,
-            alpha_matting=True,           # Better edge quality
-            alpha_matting_foreground_threshold=240,
-            alpha_matting_background_threshold=10,
-            alpha_matting_erode_size=10,
-            post_process_mask=True,        # Cleaner mask edges
+        # Run background removal in a thread with MAX QUALITY settings
+        # Note: alpha_matting uses more RAM but gives professional-grade edges (e.g., hair)
+        output_bytes = await to_thread.run_sync(
+            lambda: remove(
+                contents,                              # Pass raw bytes directly
+                session=session,
+                alpha_matting=True,                   # MAX QUALITY enabled
+                alpha_matting_foreground_threshold=240,
+                alpha_matting_background_threshold=10,
+                alpha_matting_erode_size=10,
+                post_process_mask=True                # Extra refinement step
+            )
         )
         
-        # Verify output dimensions match input
-        output_image = Image.open(io.BytesIO(output_bytes))
+        # Verify output size only (not opening as Image)
         logger.info(
-            f"Output: {output_image.size} | "
-            f"Mode: {output_image.mode} | "
-            f"Size: {len(output_bytes)/1024:.1f}KB"
+            f"Output Size: {len(output_bytes)/1024:.1f}KB"
         )
         
-        # Return as PNG (lossless, preserves transparency)
         return Response(
             content=output_bytes,
             media_type="image/png",
@@ -115,8 +107,8 @@ async def remove_background(
                 "Content-Disposition": f"attachment; filename=bgkill_output.png",
                 "X-Original-Width": str(original_width),
                 "X-Original-Height": str(original_height),
-                "X-Output-Width": str(output_image.width),
-                "X-Output-Height": str(output_image.height),
+                "X-Output-Width": str(original_width), # Same as input
+                "X-Output-Height": str(original_height), # Same as input
             }
         )
         
