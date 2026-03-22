@@ -77,21 +77,38 @@ export const useImageStore = create<ImageStore>((set, get) => ({
       }))
     }, 400)
 
+    // Abort controller for timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 180000) // 3 minute timeout
+
     try {
       const formData = new FormData()
       formData.append('file', item.file)
       formData.append('mode', get().mode)
 
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/remove-background`,
-        { method: 'POST', body: formData }
+        `${apiUrl}/remove-background`,
+        { 
+          method: 'POST', 
+          body: formData,
+          signal: controller.signal 
+        }
       )
 
+      clearTimeout(timeoutId)
       clearInterval(progressInterval)
 
       if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Processing failed')
+        let errorTitle = 'Processing failed'
+        try {
+          const err = await res.json()
+          errorTitle = err.detail || errorTitle
+        } catch {
+          errorTitle = `Server error (${res.status})`
+        }
+        throw new Error(errorTitle)
       }
 
       const origW = res.headers.get('X-Original-Width')
@@ -115,12 +132,17 @@ export const useImageStore = create<ImageStore>((set, get) => ({
       }))
 
     } catch (err: any) {
+      clearTimeout(timeoutId)
       clearInterval(progressInterval)
+      
+      let message = err.message || 'Network error'
+      if (err.name === 'AbortError') message = 'Processing timed out (server too busy)'
+      
       set(state => ({
         items: state.items.map(i => i.id === id ? { 
           ...i, 
           stage: 'error', 
-          errorMessage: err.message || 'Network error' 
+          errorMessage: message 
         } : i)
       }))
     }

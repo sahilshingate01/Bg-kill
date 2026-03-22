@@ -46,6 +46,11 @@ ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp", "image/jpg"}
 async def health():
     return {"status": "ok", "models": ["u2net", "u2net_human_seg"]}
 
+import asyncio
+# Semaphore to limit concurrent processing. Essential for 512MB RAM environments.
+# This prevents multiple large removals from crashing the container.
+processing_semaphore = asyncio.Semaphore(1)
+
 @app.post("/remove-background")
 async def remove_background(
     file: UploadFile = File(...),
@@ -62,59 +67,69 @@ async def remove_background(
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(413, "File too large. Max 50MB.")
     
-    try:
-        # Use anyio.to_thread to run the blocking rembg call in a separate thread
-        # This prevents blocking the FastAPI event loop, especially with single workers
-        from anyio import to_thread
-        
-        # Open with Pillow for metadata only
-        input_image = Image.open(io.BytesIO(contents))
-        original_width, original_height = input_image.size
-        original_mode = input_image.mode
-        
-        logger.info(
-            f"Processing: {file.filename} | "
-            f"{original_width}x{original_height} | "
-            f"Mode: {original_mode} | Size: {len(contents)/1024:.1f}KB"
-        )
-        
-        # Select model based on mode
-        session = session_portrait if mode == "portrait" else session_general
-        
-        # Run background removal in a thread with MAX QUALITY settings
-        # Note: alpha_matting uses more RAM but gives professional-grade edges (e.g., hair)
-        output_bytes = await to_thread.run_sync(
-            lambda: remove(
-                contents,                              # Pass raw bytes directly
-                session=session,
-                alpha_matting=True,                   # MAX QUALITY enabled
-                alpha_matting_foreground_threshold=240,
-                alpha_matting_background_threshold=10,
-                alpha_matting_erode_size=10,
-                post_process_mask=True                # Extra refinement step
+    # Use semaphore to queue request—only one removal at a time to save RAM
+    async with processing_semaphore:
+        try:
+            from anyio import to_thread
+            
+            # Open with Pillow for check/resize metadata
+            input_image = Image.open(io.BytesIO(contents))
+            original_width, original_height = input_image.size
+            
+            # Robustness: Downscale massive images slightly if they would risk OOM
+            # 2500px is safe for 512MB + rembg
+            max_dim = 2500
+            if max(original_width, original_height) > max_dim:
+                logger.info(f"Downscaling from {original_width}x{original_height} for RAM safety")
+                input_image.thumbnail((max_dim, max_dim), Image.LANCZOS)
+                # Re-encode to bytes for rembg
+                temp_bytes = io.BytesIO()
+                input_image.save(temp_bytes, format="PNG")
+                contents = temp_bytes.getvalue()
+                # Update current dimensions
+                current_width, current_height = input_image.size
+            else:
+                current_width, current_height = original_width, original_height
+
+            logger.info(
+                f"Processing: {file.filename} | "
+                f"{original_width}x{original_height} (scaled to {current_width}x{current_height}) | "
+                f"Size: {len(contents)/1024:.1f}KB"
             )
-        )
-        
-        # Verify output size only (not opening as Image)
-        logger.info(
-            f"Output Size: {len(output_bytes)/1024:.1f}KB"
-        )
-        
-        return Response(
-            content=output_bytes,
-            media_type="image/png",
-            headers={
-                "Content-Disposition": f"attachment; filename=bgkill_output.png",
-                "X-Original-Width": str(original_width),
-                "X-Original-Height": str(original_height),
-                "X-Output-Width": str(original_width), # Same as input
-                "X-Output-Height": str(original_height), # Same as input
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Processing failed: {str(e)}")
-        raise HTTPException(500, f"Processing failed: {str(e)}")
+            
+            # Select model based on mode
+            session = session_portrait if mode == "portrait" else session_general
+            
+            # Run background removal in a thread with MAX QUALITY settings
+            output_bytes = await to_thread.run_sync(
+                lambda: remove(
+                    contents,
+                    session=session,
+                    alpha_matting=True,
+                    alpha_matting_foreground_threshold=240,
+                    alpha_matting_background_threshold=10,
+                    alpha_matting_erode_size=10,
+                    post_process_mask=True
+                )
+            )
+            
+            logger.info(f"Output Size: {len(output_bytes)/1024:.1f}KB")
+            
+            return Response(
+                content=output_bytes,
+                media_type="image/png",
+                headers={
+                    "Content-Disposition": f"attachment; filename=bgkill_output.png",
+                    "X-Original-Width": str(original_width),
+                    "X-Original-Height": str(original_height),
+                    "X-Output-Width": str(original_width),
+                    "X-Output-Height": str(original_height),
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Processing failed: {str(e)}")
+            raise HTTPException(500, f"Processing failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
