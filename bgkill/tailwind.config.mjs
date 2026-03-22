@@ -18,6 +18,9 @@ const config = {
         red: "#FF5C5C",
         black: "#0A0A0A",
       },
+      animation: {
+        'spin-slow': 'spin 3s linear infinite',
+      },
     },
   },
   plugins: [],

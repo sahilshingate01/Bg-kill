@@ -60,7 +60,12 @@ export default function ResultPanel() {
   )
 }
 
-function ResultCard({ item, onDownload, onRemove, index }: { item: ImageItem, onDownload: any, onRemove: any, index: number }) {
+function ResultCard({ item, onDownload, onRemove, index }: { 
+  item: ImageItem, 
+  onDownload: (id: string, format: 'png' | 'webp') => void, 
+  onRemove: (id: string) => void, 
+  index: number 
+}) {
   return (
     <motion.div 
       initial={{ opacity: 0, scale: 0.95, y: 30 }}
